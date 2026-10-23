@@ -98,7 +98,7 @@ def _complete(messages: list[dict], timeout: float) -> str:
         wait = _retry_after(e)
         if wait is None or wait > MAX_RATE_LIMIT_WAIT:
             raise
-        log.warning('LLM rate limited; retrying once in %.1fs', wait)
+        log.info('LLM rate limited; retrying once in %.1fs', wait)
         time.sleep(wait)
         return _create(client, kwargs)
 
