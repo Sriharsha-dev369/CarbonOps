@@ -1,0 +1,22 @@
+[theme]
+base = "light"
+primaryColor = "#1F6F4A"
+backgroundColor = "#FFFFFF"
+secondaryBackgroundColor = "#F3F6F4"
+textColor = "#17211C"
+font = "sans serif"
+
+[client]
+# Never show a traceback in the browser; details go to the terminal only.
+showErrorDetails = "none"
+toolbarMode = "minimal"
+
+[browser]
+gatherUsageStats = false
+
+[logger]
+level = "error"
+
+[server]
+# Only this machine can open the app (safer on shared venue Wi-Fi).
+address = "localhost"
