@@ -17,4 +17,4 @@ cp .env.example .env    # then add your key: LLM_API_KEY=...
 ./run.sh
 ```
 
-This starts `moto_server -p 5000` (fake AWS) in the background and `streamlit run app.py`.
+This starts `moto_server -p 5050` (fake AWS) in the background and `streamlit run app.py`.
