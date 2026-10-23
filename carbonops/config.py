@@ -112,16 +112,25 @@ def load_policy(client: str) -> Policy:
     return policy
 
 
+def estate_path(client: str) -> Path:
+    return ROOT / 'data' / f"estate_{client.removeprefix('client_')}.yaml"
+
+
+def list_clients() -> list[str]:
+    """Client ids that have both a policy and an estate file."""
+    return sorted(p.stem for p in (ROOT / 'policies').glob('*.yaml') if estate_path(p.stem).exists())
+
+
 def load_estate(client: str) -> tuple[list[Resource], dict[str, Metrics], dict[str, dict]]:
     """Return resources, metrics by resource id, and sim settings by resource id.
 
     Only resources that have metrics (VMs) or sim settings appear in those dicts.
     `sim` is split off here so it never reaches a Resource, its tags, or the LLM.
     """
-    path = f"data/estate_{client.removeprefix('client_')}.yaml"
+    path = estate_path(client)
     raw = _read_yaml(path)
     if raw['client'] != client:
-        raise ValueError(f'{path} declares client {raw["client"]!r}')
+        raise ValueError(f'{path.name} declares client {raw["client"]!r}')
 
     resources: list[Resource] = []
     metrics: dict[str, Metrics] = {}
@@ -131,7 +140,7 @@ def load_estate(client: str) -> tuple[list[Resource], dict[str, Metrics], dict[s
         m, sim = entry.pop('metrics', None), entry.pop('sim', None)
         r = Resource.model_validate({**entry, 'client': client})
         if any(x.id == r.id for x in resources):
-            raise ValueError(f'{path}: duplicate resource id {r.id!r}')
+            raise ValueError(f'{path.name}: duplicate resource id {r.id!r}')
         resources.append(r)
         if m is not None:
             metrics[r.id] = Metrics.model_validate(m)

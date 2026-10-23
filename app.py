@@ -10,11 +10,11 @@ from dotenv import dotenv_values, load_dotenv
 from pydantic import ValidationError
 
 from carbonops import audit, config, graph
+from carbonops.moto_runtime import ensure_moto
 from carbonops.models import Action, AuditEvent, Decision, ExecResult, Finding, Resource, Role
 
 load_dotenv(config.ROOT / '.env')
 
-RUN_FAKE = True   # the business-logic modules are stubs until the hackathon; flip to False then
 ROLES: list[Role] = ['Viewer', 'Engineer', 'Approver', 'Admin']
 CLIENTS = {config.load_policy(c).name: c for c in ('client_a', 'client_b')}
 TIER_COLOR = {'AUTO': 'green', 'APPROVE': 'orange', 'BLOCK': 'red'}
@@ -85,15 +85,14 @@ with st.sidebar:
 
     if st.button('Run', type='primary', disabled=role == 'Viewer'):
         try:
-            st.session_state.outcome = graph.run(client, role, user, fake=RUN_FAKE)
+            ensure_moto()
+            st.session_state.outcome = graph.run(client, role, user)
             st.session_state.choices = {}
         except Exception as e:  # show any failure in the page instead of a blank app
             st.session_state.outcome = None
             st.exception(e)
     if role == 'Viewer':
         st.caption('Viewers are read-only.')
-    if RUN_FAKE:
-        st.caption('Using fake data until the business logic is implemented.')
 
 outcome: graph.Outcome | None = st.session_state.get('outcome')
 if outcome is not None and outcome['state'].get('client') != client:
@@ -183,9 +182,6 @@ with audit_tab:
     except ValidationError as e:
         events = []
         st.error(f'{path.name} has a line that is not a valid audit event: {e}')
-    if not events and outcome is not None and RUN_FAKE:
-        st.info('Fake runs write no audit log. Sample events:')
-        events = _sample_audit(state)
     if events:
         st.dataframe([{'ts': e.ts, 'actor': e.actor, 'role': e.role, 'kind': e.kind,
                        'payload': json.dumps(e.payload), 'hash': e.hash[:12]} for e in events], hide_index=True)

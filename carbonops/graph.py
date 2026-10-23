@@ -1,193 +1,247 @@
-"""LangGraph pipeline: ingest → detect → analyse → price → guard → approval → execute → report.
+"""LangGraph pipeline in four stages (the organizers' workflow words):
 
-Each node calls its module. While those modules are stubs, run with fake=True (or env
-CARBONOPS_FAKE=1): the stubbed steps then return hard-coded demo data of the right types,
-so the graph, the approval pause and the app all work end to end.
+  01 Ingest  ingest
+  02 Decide  detect → analyse → price → guard
+  03 Act     execute_auto → approval (pauses for a human) → execute
+  04 Report  report
+
+AUTO actions run before the pause, so "auto-executed" and "awaiting approval" are both true while
+a human decides. Every node adds a trace entry; a failing node is logged to the audit trail and turns
+into a friendly `error` message, and the remaining nodes are skipped.
 """
 
-import os
+import logging
+import operator
+import time
 import uuid
+from collections import Counter
+from collections.abc import Callable
 from datetime import datetime, timezone
-from typing import Any, Literal, TypedDict
+from typing import Annotated, Any, Literal, TypedDict
 
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
+from langgraph.errors import GraphBubbleUp
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import Command, interrupt
 
-from carbonops import analyst, audit, calc, config, detector, executor, guard, reporter, seed
+from carbonops import audit, calc, config, detector, executor, guard, reporter, seed
+from carbonops.fmt import inr
 from carbonops.models import (
-    Action, AuditEvent, Decision, ExecResult, Finding, Metrics, Resource, Role, Tier,
+    Action, AuditEvent, Decision, ExecResult, Finding, Metrics, Resource, Role,
 )
+from carbonops.moto_runtime import is_sandbox
 from carbonops.providers.aws import AwsProvider
 
+log = logging.getLogger(__name__)
+
 Verdict = Literal['approve', 'reject']
-APPROVER_ROLES: tuple[Role, ...] = ('Approver', 'Admin')
+Stage = Literal['ingest', 'decide', 'act', 'report']
+APPROVER_ROLES: tuple[Role, ...] = executor.APPROVER_ROLES
+STAGES: list[tuple[Stage, str]] = [('ingest', '01 Ingest'), ('decide', '02 Decide'),
+                                    ('act', '03 Act'), ('report', '04 Report')]
 
 
 class State(TypedDict, total=False):
     client: str
     role: Role
     user: str
-    fake: bool
+    use_llm: bool
+    audit_path: str
     resources: list[Resource]
     metrics: dict[str, Metrics]
-    sims: dict[str, dict]
-    aws_ids: dict[str, str]          # resource id -> AWS id, from seed (real mode only)
     findings: list[Finding]
     actions: list[Action]
     decisions: list[Decision]
-    approvals: dict[str, Verdict]    # action id -> verdict, for every APPROVE action
+    approvals: dict[str, Verdict]        # action id -> verdict, for every APPROVE action
+    comments: dict[str, str]             # optional approver comments by action id
     approver: str
     approver_role: Role
-    results: list[ExecResult]
+    results: Annotated[list[ExecResult], operator.add]   # execute_auto and execute both append
     totals: dict[str, Any]
     report: str
-    audit_path: str
+    trace: Annotated[list[dict], operator.add]           # {stage, node, summary, ms}
+    error: str                           # friendly message when a node failed
 
 
 class Outcome(TypedDict):
     thread_id: str
     state: State
-    pending: list[dict]              # actions awaiting approval; empty once the run has finished
-
-
-def _is_fake(state: State) -> bool:
-    return bool(state.get('fake')) or os.environ.get('CARBONOPS_FAKE') == '1'
+    pending: list[dict]                  # actions awaiting approval; empty once the run has finished
 
 
 def _audit(state: State, kind: str, payload: dict, actor: str = 'system',
            role: Role | Literal['system'] = 'system') -> None:
-    if _is_fake(state):
-        return
-    event = AuditEvent(ts=datetime.now(timezone.utc).isoformat(), actor=actor, role=role,
-                       kind=kind, payload=payload)
-    audit.append(event, state['audit_path'])
+    audit.append(AuditEvent(ts=datetime.now(timezone.utc).isoformat(timespec='seconds'), actor=actor,
+                            role=role, kind=kind, payload=payload), state['audit_path'])
 
 
-# --- nodes -------------------------------------------------------------------
-
-def ingest(state: State) -> State:
-    resources, metrics, sims = config.load_estate(state['client'])
-    out: State = {
-        'resources': resources, 'metrics': metrics, 'sims': sims,
-        'audit_path': state.get('audit_path') or str(config.ROOT / 'audit' / f"{state['client']}.jsonl"),
-    }
-    if not _is_fake(state):
-        out['aws_ids'] = seed.seed(resources)
-    return out
+def _by_id(state: State) -> dict[str, Resource]:
+    return {r.id: r for r in state['resources']}
 
 
-def detect(state: State) -> State:
-    if _is_fake(state):
-        findings = _fake_findings(state)
-    else:
-        findings = detector.detect(state['resources'], state['metrics'], config.load_policy(state['client']))
+# --- nodes: each returns (state update, one-line trace summary) ------------------
+
+def ingest(state: State) -> tuple[State, str]:
+    client = state['client']
+    provider = AwsProvider(client)
+    resources = provider.list_resources(client)
+    note = ''
+    if not resources and is_sandbox():
+        seed.seed(client)
+        resources = provider.list_resources(client)
+        note = ' (estate seeded first)'
+    order = {r.id: i for i, r in enumerate(config.load_estate(client)[0])}
+    resources.sort(key=lambda r: (order.get(r.id, len(order)), r.id))
+    metrics = {r.id: m for r in resources if r.kind == 'vm' and (m := provider.get_metrics(r.id)) is not None}
+    _audit(state, 'run', {'client': client, 'resources': len(resources), 'use_llm': bool(state.get('use_llm'))},
+           actor=state['user'], role=state['role'])
+    source = 'AWS (emulated by moto)' if is_sandbox() else 'AWS'
+    return ({'resources': resources, 'metrics': metrics},
+            f'Read {len(resources)} resources and {len(metrics)} hourly CPU series (7 days) from {source}{note}.')
+
+
+def detect(state: State) -> tuple[State, str]:
+    findings = detector.detect(state['resources'], state['metrics'], config.load_policy(state['client']))
     for f in findings:
         _audit(state, 'finding', f.model_dump())
-    return {'findings': findings}
+    kinds = Counter(f.kind for f in findings)
+    quiet = len(state['resources']) - len(findings)
+    return ({'findings': findings},
+            f"{len(findings)} findings ({', '.join(f'{n} {k}' for k, n in kinds.items())}); {quiet} need no action.")
 
 
-def analyse(state: State) -> State:
-    if _is_fake(state):
-        return {'actions': _fake_actions(state)}
-    resources = {r.id: r for r in state['resources']}
-    actions = analyst.propose(state['findings'], resources, config.load_policy(state['client']),
-                              config.load_prices())
-    return {'actions': actions}
+def analyse(state: State) -> tuple[State, str]:
+    policy, prices, resources = config.load_policy(state['client']), config.load_prices(), _by_id(state)
+    actions = [detector.default_action(f, resources[f.resource_id], prices, policy) for f in state['findings']]
+    return {'actions': actions}, f'Rules proposed {len(actions)} actions (LLM off).'
 
 
-def price(state: State) -> State:
-    if _is_fake(state):
-        return {'actions': [_fake_price(a) for a in state['actions']]}
-    resources = {r.id: r for r in state['resources']}
-    prices, carbon = config.load_prices(), config.load_carbon()
+def price(state: State) -> tuple[State, str]:
+    resources, prices, carbon = _by_id(state), config.load_prices(), config.load_carbon()
     priced = [calc.price_action(a, resources[a.resource_id], state['metrics'].get(a.resource_id), prices, carbon)
               for a in state['actions']]
-    return {'actions': priced}
+    at_stake = sum(a.inr_month for a in priced)
+    kg = sum(a.kgco2e_month for a in priced)
+    return {'actions': priced}, f'{inr(at_stake)}/month and {kg:,.1f} kg CO₂e/month at stake.'
 
 
-def guard_node(state: State) -> State:
-    actions, decisions = list(state['actions']), []
-    if _is_fake(state):
-        decisions = [_fake_decision(state, a) for a in actions]
-        tag_pairs = _fake_tag_decisions(state)
-    else:
-        policy = config.load_policy(state['client'])
-        resources = {r.id: r for r in state['resources']}
-        for a in actions:
-            r = resources[a.resource_id]
-            decisions.append(guard.evaluate(a, r, policy, guard.is_suspicious(r)))
-        tag_pairs = [pair for r in state['resources'] for pair in guard.tag_decisions(r, policy)]
-    for a, d in tag_pairs:
+def guard_node(state: State) -> tuple[State, str]:
+    policy, resources = config.load_policy(state['client']), _by_id(state)
+    actions = list(state['actions'])
+    decisions = []
+    for a in actions:
+        r = resources[a.resource_id]
+        decisions.append(guard.evaluate(a, r, policy, guard.is_suspicious(r)))
+    injected = [pair for r in state['resources'] for pair in guard.tag_decisions(r, policy)]
+    for a, d in injected:
         actions.append(a)
         decisions.append(d)
     for d in decisions:
         _audit(state, 'decision', d.model_dump())
-    return {'actions': actions, 'decisions': decisions}
+    tiers = Counter(d.tier for d in decisions)
+    note = f' ({len(injected)} request(s) found in tags, blocked)' if injected else ''
+    return ({'actions': actions, 'decisions': decisions},
+            f"{tiers['AUTO']} AUTO · {tiers['APPROVE']} APPROVE · {tiers['BLOCK']} BLOCK{note}.")
 
 
-def approval(state: State) -> State:
+def _execute(state: State, actions: list[Action], approver: str | None, role: Role | Literal['system']) -> list[ExecResult]:
+    provider = AwsProvider(state['client'])
+    decisions = {d.action_id: d for d in state['decisions']}
+    return [executor.execute(a, provider, state['audit_path'], approver, decision=decisions[a.id], role=role)
+            for a in actions]
+
+
+def _result_summary(results: list[ExecResult], what: str) -> str:
+    if not results:
+        return f'No {what}.'
+    counts = Counter(r.status for r in results)
+    return f"{len(results)} {what}: " + ', '.join(f'{n} {s.replace("_", " ").lower()}' for s, n in counts.items()) + '.'
+
+
+def execute_auto(state: State) -> tuple[State, str]:
+    tiers = {d.action_id: d.tier for d in state['decisions']}
+    results = _execute(state, [a for a in state['actions'] if tiers[a.id] == 'AUTO'], None, 'system')
+    return {'results': results}, _result_summary(results, 'auto actions')
+
+
+def approval(state: State) -> tuple[State, str]:
     decisions = {d.action_id: d for d in state['decisions']}
     pending = [a for a in state['actions'] if decisions[a.id].tier == 'APPROVE']
     if not pending:
-        return {'approvals': {}}
+        return {'approvals': {}}, 'Nothing needed a human.'
     answer = interrupt({'pending': [{**a.model_dump(), 'reasons': decisions[a.id].reasons} for a in pending]})
     # Anything not explicitly approved is rejected.
     verdicts: dict[str, Verdict] = {
         a.id: 'approve' if answer['approvals'].get(a.id) == 'approve' else 'reject' for a in pending
     }
+    comments = {k: v for k, v in (answer.get('comments') or {}).items() if v}
     for action_id, verdict in verdicts.items():
-        _audit(state, 'approval', {'action_id': action_id, 'verdict': verdict},
+        _audit(state, 'approval', {'action_id': action_id, 'verdict': verdict, 'comment': comments.get(action_id, '')},
                actor=answer['approver'], role=answer['role'])
-    return {'approvals': verdicts, 'approver': answer['approver'], 'approver_role': answer['role']}
+    n_ok = sum(v == 'approve' for v in verdicts.values())
+    return ({'approvals': verdicts, 'comments': comments, 'approver': answer['approver'],
+             'approver_role': answer['role']},
+            f"{answer['approver']} ({answer['role']}) approved {n_ok}, rejected {len(verdicts) - n_ok}.")
 
 
-def execute(state: State) -> State:
-    decisions = {d.action_id: d for d in state['decisions']}
-    approvals = state.get('approvals', {})
-    runnable = [a for a in state['actions']
-                if decisions[a.id].tier == 'AUTO'
-                or (decisions[a.id].tier == 'APPROVE' and approvals.get(a.id) == 'approve')]
-    if _is_fake(state):
-        return {'results': [_fake_result(state, a) for a in runnable]}
-    provider = AwsProvider(state['aws_ids'], state['sims'])
-    results = []
-    for a in runnable:
-        auto = decisions[a.id].tier == 'AUTO'
-        results.append(executor.execute(
-            a, provider, state['audit_path'],
-            None if auto else state['approver'],
-            decision=decisions[a.id],
-            role='system' if auto else state['approver_role'],
-        ))
-    return {'results': results}
+def execute(state: State) -> tuple[State, str]:
+    approved = [a for a in state['actions'] if state.get('approvals', {}).get(a.id) == 'approve']
+    results = _execute(state, approved, state.get('approver'), state.get('approver_role', 'system'))
+    return {'results': results}, _result_summary(results, 'approved actions')
 
 
-def report(state: State) -> State:
-    policy = config.load_policy(state['client'])
-    if _is_fake(state):
-        totals = _fake_totals(state)
-        text = reporter.TEMPLATE.format(**{
-            **totals, 'client': policy.name,
-            'blocked': ', '.join(b['action_id'] for b in totals['blocked']) or 'none',
-            'needs_human': ', '.join(totals['needs_human']) or 'none',
-        })
-    else:
-        totals = calc.totals(state['resources'], state['findings'], state['actions'],
-                             state['decisions'], state['results'])
-        text = reporter.summarise(policy, totals, state['results'])
-    _audit(state, 'report', {'totals': totals, 'report': text})
-    return {'totals': totals, 'report': text}
+def report(state: State) -> tuple[State, str]:
+    totals = calc.totals(state['resources'], state['findings'], state['actions'], state['decisions'],
+                         state['results'], state.get('approvals'))
+    text = reporter.template_report(state['client'], state['results'], totals)
+    _audit(state, 'report', {'totals': totals})
+    return ({'totals': totals, 'report': text},
+            f"Report written: {inr(totals['inr_month'])}/month realised, {totals['kgco2e_year']:,.1f} kg CO₂e/year.")
 
 
 # --- graph -------------------------------------------------------------------
 
-NODES = [
-    ('ingest', ingest), ('detect', detect), ('analyse', analyse), ('price', price),
-    ('guard', guard_node), ('approval', approval), ('execute', execute), ('report', report),
+NODES: list[tuple[str, Stage, Callable[[State], tuple[State, str]]]] = [
+    ('ingest', 'ingest', ingest),
+    ('detect', 'decide', detect), ('analyse', 'decide', analyse),
+    ('price', 'decide', price), ('guard', 'decide', guard_node),
+    ('execute_auto', 'act', execute_auto), ('approval', 'act', approval), ('execute', 'act', execute),
+    ('report', 'report', report),
 ]
+NODE_STAGE: dict[str, Stage] = {name: stage for name, stage, _ in NODES}
+
+
+def _step(name: str, stage: Stage, fn: Callable[[State], tuple[State, str]]) -> Callable[[State], State]:
+    """Wrap a node: skip after an earlier error, time it, add its trace entry, and catch failures."""
+
+    def run_node(state: State) -> State:
+        if state.get('error'):
+            return {}
+        start = time.perf_counter()
+        try:
+            update, summary = fn(state)
+        except GraphBubbleUp:      # interrupt() for the approval pause: not an error
+            raise
+        except Exception as e:
+            log.error('node %s failed', name, exc_info=True)
+            problem = f'{type(e).__name__}: {e}'
+            try:
+                _audit(state, 'error', {'node': name, 'error': problem})
+            except Exception:
+                log.error('could not write the error to the audit log', exc_info=True)
+            return {'error': f'The "{name}" step failed ({problem}). The rest of the run was skipped; '
+                             f'the error is recorded in the audit log.',
+                    'trace': [_entry(stage, name, f'Error: {problem}', start)]}
+        return {**update, 'trace': [_entry(stage, name, summary, start)]}
+
+    return run_node
+
+
+def _entry(stage: Stage, node: str, summary: str, start: float) -> dict:
+    return {'stage': stage, 'node': node, 'summary': summary, 'ms': round((time.perf_counter() - start) * 1000)}
+
 
 # Checkpoints hold our pydantic models; allow exactly these types to be deserialised.
 _SERDE = JsonPlusSerializer(allowed_msgpack_modules=[
@@ -197,9 +251,9 @@ _SERDE = JsonPlusSerializer(allowed_msgpack_modules=[
 
 def build_graph(checkpointer: InMemorySaver | None = None) -> CompiledStateGraph:
     g = StateGraph(State)
-    for name, fn in NODES:
-        g.add_node(name, fn)
-    names = [name for name, _ in NODES]
+    for name, stage, fn in NODES:
+        g.add_node(name, _step(name, stage, fn))
+    names = [name for name, _, _ in NODES]
     g.add_edge(START, names[0])
     for a, b in zip(names, names[1:]):
         g.add_edge(a, b)
@@ -222,133 +276,34 @@ def _config(thread_id: str) -> dict:
     return {'configurable': {'thread_id': thread_id}}
 
 
-def _outcome(thread_id: str) -> Outcome:
+def _drive(graph_input: Any, thread_id: str, on_step: Callable[[str], None] | None) -> Outcome:
+    for chunk in _app().stream(graph_input, _config(thread_id), stream_mode='updates'):
+        if on_step:
+            for node in chunk:
+                if node in NODE_STAGE:
+                    on_step(node)
     snap = _app().get_state(_config(thread_id))
     pending = [p for i in snap.interrupts for p in i.value['pending']]
     return {'thread_id': thread_id, 'state': snap.values, 'pending': pending}
 
 
-def run(client: str, role: Role, user: str, fake: bool = False) -> Outcome:
-    """Start a run. It finishes, or pauses at `approval` with `pending` filled."""
+def run(client: str, role: Role, user: str, *, use_llm: bool = False, audit_path: str | None = None,
+        on_step: Callable[[str], None] | None = None) -> Outcome:
+    """Start a run. It finishes, or pauses at `approval` with `pending` filled. `on_step(node)` fires per node."""
     thread_id = uuid.uuid4().hex
-    _app().invoke({'client': client, 'role': role, 'user': user, 'fake': fake}, _config(thread_id))
-    return _outcome(thread_id)
+    initial: State = {'client': client, 'role': role, 'user': user, 'use_llm': use_llm,
+                      'audit_path': str(audit_path or config.audit_path(client)), 'results': [], 'trace': []}
+    return _drive(initial, thread_id, on_step)
 
 
-def resume(thread_id: str, approvals: dict[str, Verdict], approver: str, role: Role = 'Approver') -> Outcome:
+def resume(thread_id: str, approvals: dict[str, Verdict], approver: str, role: Role = 'Approver', *,
+           comments: dict[str, str] | None = None, on_step: Callable[[str], None] | None = None) -> Outcome:
     """Resume a paused run with a verdict per pending action id. Unlisted actions are rejected."""
-    _app().invoke(Command(resume={'approvals': approvals, 'approver': approver, 'role': role}),
-                  _config(thread_id))
-    return _outcome(thread_id)
+    answer = {'approvals': approvals, 'approver': approver, 'role': role, 'comments': comments or {}}
+    return _drive(Command(resume=answer), thread_id, on_step)
 
 
-# --- fake data (used until the stubs are implemented) --------------------------
-# Numbers match what calc.py should produce for these resources; tiers follow guard.py's rules.
-
-_FAKE_PLAN: dict[str, dict[str, Any]] = {
-    'dev-api-01':    dict(kind='ALWAYS_ON', evidence=('hours_per_week',), type='SCHEDULE',
-                          params={'hours_per_week': 50}, confidence=0.9, inr=9787.7, kg=3.71,
-                          tiers=('AUTO', 'APPROVE')),
-    'dev-ci-runner': dict(kind='IDLE', evidence=('cpu_avg', 'cpu_max'), type='STOP',
-                          params={}, confidence=0.9, inr=27870.1, kg=10.44, tiers=('AUTO', 'AUTO')),
-    'test-db-02':    dict(kind='ALWAYS_ON', evidence=('hours_per_week',), type='SCHEDULE',
-                          params={'hours_per_week': 50}, confidence=0.9, inr=4341.4, kg=1.88,
-                          tiers=('AUTO', 'APPROVE')),
-    'staging-web':   dict(kind='OVERSIZED', evidence=('cpu_p95',), type='RESIZE',
-                          params={'to': 'm5.xlarge'}, confidence=0.9, inr=13935.0, kg=5.10,
-                          tiers=('APPROVE', 'APPROVE')),
-    'staging-api':   dict(kind='OVERSIZED', evidence=('cpu_p95',), type='RESIZE',
-                          params={'to': 'm5.large'}, confidence=0.9, inr=6967.5, kg=2.55,
-                          tiers=('APPROVE', 'APPROVE')),
-    'reporting-vm':  dict(kind='IDLE', evidence=('cpu_avg', 'cpu_max'), type='SCHEDULE',
-                          params={'hours_per_week': 50}, confidence=0.5, inr=8682.8, kg=3.67,
-                          tiers=('APPROVE', 'APPROVE'), why='confidence 0.50 is below 0.70'),
-    'sandbox-ml':    dict(kind='IDLE', evidence=('cpu_avg', 'cpu_max'), type='STOP',
-                          params={}, confidence=0.9, inr=27870.1, kg=10.32,
-                          tiers=('APPROVE', 'APPROVE'), why='instructions found in tags'),
-    'prod-web-01':   dict(kind='OVERSIZED', evidence=('cpu_p95',), type='RESIZE',
-                          params={'to': 'm5.large'}, confidence=0.9, inr=6967.5, kg=2.55,
-                          tiers=('BLOCK', 'BLOCK'), why='prod is a protected environment'),
-    'vol-orphan-01': dict(kind='UNATTACHED', evidence=(), type='SNAPSHOT',
-                          params={}, confidence=0.9, inr=0.0, kg=0.0, tiers=('APPROVE', 'APPROVE')),
-}
-_FAKE_WHY: dict[Tier, str] = {'AUTO': 'within auto policy', 'APPROVE': 'needs a human approver',
-                              'BLOCK': 'not allowed by policy'}
-
-
-def _base_id(resource_id: str) -> str:
-    return resource_id.removeprefix('nb-')
-
-
-def _fake_findings(state: State) -> list[Finding]:
-    findings = []
-    for r in state['resources']:
-        plan = _FAKE_PLAN.get(_base_id(r.id))
-        if plan is None:
-            continue
-        m = state['metrics'].get(r.id)
-        evidence = ({k: getattr(m, k) for k in plan['evidence']} if m
-                    else {'attached': r.attached, 'size_gb': r.size_gb})
-        findings.append(Finding(resource_id=r.id, kind=plan['kind'], evidence=evidence))
-    return findings
-
-
-def _fake_actions(state: State) -> list[Action]:
-    actions = []
-    for f in state['findings']:
-        plan = _FAKE_PLAN[_base_id(f.resource_id)]
-        actions.append(Action(
-            id=f"{f.resource_id}:{plan['type']}", resource_id=f.resource_id, type=plan['type'],
-            params=plan['params'], confidence=plan['confidence'],
-            reason=f"[fake] {f.kind.lower().replace('_', ' ')}: {f.evidence}",
-        ))
-    return actions
-
-
-def _fake_price(action: Action) -> Action:
-    plan = _FAKE_PLAN[_base_id(action.resource_id)]
-    return action.model_copy(update={'inr_month': plan['inr'], 'kgco2e_month': plan['kg']})
-
-
-def _fake_decision(state: State, action: Action) -> Decision:
-    plan = _FAKE_PLAN[_base_id(action.resource_id)]
-    tier: Tier = plan['tiers'][0 if state['client'] == 'client_a' else 1]
-    return Decision(action_id=action.id, tier=tier, reasons=[f"[fake] {plan.get('why', _FAKE_WHY[tier])}"])
-
-
-def _fake_tag_decisions(state: State) -> list[tuple[Action, Decision]]:
-    pairs = []
-    for r in state['resources']:
-        if _base_id(r.id) == 'sandbox-ml':
-            a = Action(id=f'{r.id}:TERMINATE:tag', resource_id=r.id, type='TERMINATE', confidence=0,
-                       proposed_by='tag', reason=f"tag 'note' asks: {r.tags.get('note', '')}")
-            pairs.append((a, Decision(action_id=a.id, tier='BLOCK',
-                                      reasons=['[fake] TERMINATE is never allowed', 'instructions found in tags'])))
-    return pairs
-
-
-def _fake_result(state: State, action: Action) -> ExecResult:
-    if state['sims'].get(action.resource_id, {}).get('health_fail_after') == action.type:
-        return ExecResult(action_id=action.id, status='ROLLED_BACK',
-                          detail=f'[fake] health check failed after {action.type}; restored')
-    return ExecResult(action_id=action.id, status='DONE', detail='[fake] applied')
-
-
-def _fake_totals(state: State) -> dict[str, Any]:
-    actions = {a.id: a for a in state['actions']}
-    tiers = [d.tier for d in state['decisions']]
-    done = [actions[r.action_id] for r in state['results'] if r.status == 'DONE']
-    inr = sum(a.inr_month for a in done)
-    kg = sum(a.kgco2e_month for a in done)
-    with_finding = {f.resource_id for f in state['findings']}
-    return {
-        'auto': tiers.count('AUTO'), 'approve': tiers.count('APPROVE'), 'block': tiers.count('BLOCK'),
-        'no_finding': sum(r.id not in with_finding for r in state['resources']),
-        'done': len(done),
-        'rolled_back': sum(r.status == 'ROLLED_BACK' for r in state['results']),
-        'failed': sum(r.status == 'FAILED' for r in state['results']),
-        'inr_month': round(inr, 2), 'inr_year': round(inr * 12, 2),
-        'kgco2e_month': round(kg, 2), 'kgco2e_year': round(kg * 12, 2),
-        'blocked': [{'action_id': d.action_id, 'reasons': d.reasons} for d in state['decisions'] if d.tier == 'BLOCK'],
-        'needs_human': [d.action_id for d in state['decisions'] if d.tier == 'APPROVE'],
-    }
+def reset_demo(client: str) -> None:
+    """Rebuild the client's emulated estate and clear its audit log."""
+    seed.reset(client)
+    config.audit_path(client).unlink(missing_ok=True)
