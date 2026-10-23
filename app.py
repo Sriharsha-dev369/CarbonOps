@@ -303,8 +303,12 @@ with st.sidebar:
     client = st.selectbox('Client', list(names), format_func=names.get)
     st.divider()
     use_llm = st.toggle('LLM analyst', value=False, help='Let the LLM choose actions. Rules are used when it is off or fails.')
-    demo = st.toggle('Demo mode (replay)', value=False, help='Replay recorded LLM answers: no API calls, works offline.')
-    os.environ['REPLAY_MODE'] = 'play' if demo else replay_default()
+    demo = st.toggle('Demo mode (replay)', value=False,
+                     help='Replay recorded LLM answers: no API calls, works offline. Turns the LLM analyst on.')
+    record = role == 'Admin' and not demo and st.checkbox(
+        'Record replay', help='Admin: save live LLM answers to replay/ so Demo mode can play them offline.')
+    os.environ['REPLAY_MODE'] = 'play' if demo else 'record' if record else replay_default()
+    use_llm = use_llm or demo
     st.divider()
     # Tooltips only on disabled buttons: a focused button keeps its tooltip open over the next one.
     run_clicked = st.button('Run analysis', type='primary', disabled=role == 'Viewer', width='stretch',
@@ -359,6 +363,9 @@ with tabs[0]:
                        help=f"Realised. {t['pending_kgco2e_year']:,.1f} kg/year more is awaiting approval.")
         if view.pending:
             st.caption(f"{inr(t['pending_inr_month'])}/month more is waiting in **Approvals**.")
+        analysis = next((e['summary'] for e in s.get('trace', []) if e['node'] == 'analyse'), '')
+        if s.get('use_llm') and analysis:
+            st.caption(f'Analyst: {analysis}')
 
         for tier, title in (('AUTO', 'Auto-executed'), ('APPROVE', 'Needs approval'), ('BLOCK', 'Blocked')):
             group = [a for a in view.actions.values() if view.decisions[a.id].tier == tier]

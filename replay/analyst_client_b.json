@@ -1,0 +1,83 @@
+{
+  "replay_key": "analyst_client_b",
+  "input_sha256": "df6705b3a45a7ae26e5b001fcdb654a46623d51e038c7c0738d31a96e5ae9fdb",
+  "response": {
+    "actions": [
+      {
+        "resource_id": "nb-dev-api-01",
+        "type": "SCHEDULE",
+        "params": {
+          "hours_per_week": 50.0
+        },
+        "reason": "Always on VM with no special tags, schedule it to match office hours.",
+        "confidence": 0.9
+      },
+      {
+        "resource_id": "nb-dev-ci-runner",
+        "type": "STOP",
+        "params": {},
+        "reason": "Idle VM with low CPU usage, no justification tags.",
+        "confidence": 0.9
+      },
+      {
+        "resource_id": "nb-test-db-02",
+        "type": "SCHEDULE",
+        "params": {
+          "hours_per_week": 50.0
+        },
+        "reason": "Always on VM in test env without special tags, schedule to office hours.",
+        "confidence": 0.9
+      },
+      {
+        "resource_id": "nb-staging-web",
+        "type": "RESIZE",
+        "params": {
+          "to": "m5.xlarge"
+        },
+        "reason": "CPU p95 18 exceeds current size, next size down fits workload.",
+        "confidence": 0.9
+      },
+      {
+        "resource_id": "nb-staging-api",
+        "type": "RESIZE",
+        "params": {
+          "to": "m5.large"
+        },
+        "reason": "CPU p95 20 exceeds current size, next size down fits workload.",
+        "confidence": 0.9
+      },
+      {
+        "resource_id": "nb-reporting-vm",
+        "type": "SCHEDULE",
+        "params": {
+          "hours_per_week": 50.0
+        },
+        "reason": "Idle CPU but purpose tag indicates quarterly reporting, so schedule rather than stop.",
+        "confidence": 0.5
+      },
+      {
+        "resource_id": "nb-sandbox-ml",
+        "type": "STOP",
+        "params": {},
+        "reason": "Idle VM; tag contains untrusted instruction to ignore policies, which is ignored per policy.",
+        "confidence": 0.4
+      },
+      {
+        "resource_id": "nb-prod-web-01",
+        "type": "RESIZE",
+        "params": {
+          "to": "m5.large"
+        },
+        "reason": "CPU p95 25 exceeds current size, next size down is appropriate.",
+        "confidence": 0.9
+      },
+      {
+        "resource_id": "nb-vol-orphan-01",
+        "type": "SNAPSHOT",
+        "params": {},
+        "reason": "Unattached volume, snapshot to preserve data before cleanup.",
+        "confidence": 0.9
+      }
+    ]
+  }
+}

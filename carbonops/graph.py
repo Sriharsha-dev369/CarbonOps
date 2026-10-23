@@ -26,7 +26,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import Command, interrupt
 
-from carbonops import audit, calc, config, detector, executor, guard, reporter, seed
+from carbonops import analyst, audit, calc, config, detector, executor, guard, reporter, seed
 from carbonops.fmt import inr
 from carbonops.models import (
     Action, AuditEvent, Decision, ExecResult, Finding, Metrics, Resource, Role,
@@ -113,9 +113,15 @@ def detect(state: State) -> tuple[State, str]:
 
 
 def analyse(state: State) -> tuple[State, str]:
-    policy, prices, resources = config.load_policy(state['client']), config.load_prices(), _by_id(state)
-    actions = [detector.default_action(f, resources[f.resource_id], prices, policy) for f in state['findings']]
-    return {'actions': actions}, f'Rules proposed {len(actions)} actions (LLM off).'
+    policy, resources = config.load_policy(state['client']), _by_id(state)
+    if not state.get('use_llm'):
+        prices = config.load_prices()
+        actions = [detector.default_action(f, resources[f.resource_id], prices, policy) for f in state['findings']]
+        return {'actions': actions}, f'Rules proposed {len(actions)} actions (LLM off).'
+    notes: list[str] = []
+    actions = analyst.propose(state['findings'], resources, policy, notes=notes)
+    _audit(state, 'analysis', {'notes': notes, 'proposed_by': dict(Counter(a.proposed_by for a in actions))})
+    return {'actions': actions}, ' '.join(notes)
 
 
 def price(state: State) -> tuple[State, str]:
@@ -195,10 +201,15 @@ def execute(state: State) -> tuple[State, str]:
 def report(state: State) -> tuple[State, str]:
     totals = calc.totals(state['resources'], state['findings'], state['actions'], state['decisions'],
                          state['results'], state.get('approvals'))
-    text = reporter.template_report(state['client'], state['results'], totals)
-    _audit(state, 'report', {'totals': totals})
+    notes: list[str] = []
+    if state.get('use_llm'):
+        text = reporter.summarize(state['client'], state['results'], totals, notes=notes)
+    else:
+        text = reporter.template_report(state['client'], state['results'], totals)
+        notes.append('Report: template (LLM off).')
+    _audit(state, 'report', {'totals': totals, 'notes': notes})
     return ({'totals': totals, 'report': text},
-            f"Report written: {inr(totals['inr_month'])}/month realised, {totals['kgco2e_year']:,.1f} kg CO₂e/year.")
+            f"{inr(totals['inr_month'])}/month realised, {totals['kgco2e_year']:,.1f} kg CO₂e/year. {' '.join(notes)}")
 
 
 # --- graph -------------------------------------------------------------------

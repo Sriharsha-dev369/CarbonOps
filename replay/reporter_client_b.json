@@ -1,0 +1,7 @@
+{
+  "replay_key": "reporter_client_b",
+  "input_sha256": "cebc0f829906a97c4585bddd316d73cc4217b596c66276474a5a1d0805bd0a82",
+  "response": {
+    "summary": "Northbank Finance saved ₹92,487 per month and ₹11,09,843 per year, reducing emissions by 421.2 kg CO₂e annually. One action ran automatically, seven required approval, and two were blocked. The blocked actions were nb-prod-web-01 RESIZE (blocked because the production environment is protected) and nb-sandbox-ml TERMINATE (blocked because termination is never allowed for Northbank Finance and tags are not commands). One action, nb-staging-api RESIZE, was rolled back after its health check took 850 ms, exceeding the 300 ms threshold. No actions are pending approval, and all other actions completed successfully."
+  }
+}

@@ -72,7 +72,7 @@ class AuditEvent(BaseModel):
     ts: str                      # ISO 8601
     actor: str                   # 'system' | user name
     role: Role | Literal['system']
-    kind: str                    # 'run' | 'finding' | 'decision' | 'approval' | 'snapshot' | 'apply' |
+    kind: str                    # 'run' | 'finding' | 'analysis' | 'decision' | 'approval' | 'snapshot' | 'apply' |
                                  # 'health_check' | 'rollback' | 'done' | 'skipped' | 'failed' | 'report' | 'error'
     payload: dict
     prev_hash: str = ''

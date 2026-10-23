@@ -1,0 +1,7 @@
+{
+  "replay_key": "reporter_client_a",
+  "input_sha256": "ce8cb66963106356376dad13b7340bfda80a529af07e8e8f7a2a2c9afce5bd70",
+  "response": {
+    "summary": "Acme Retail saved ₹92,487 per month and ₹11,09,843 per year, cutting 421.2 kg CO₂e annually. Three actions ran automatically, five required approval, and two were blocked. Blocked actions: prod-web-01 RESIZE was stopped because the production environment is protected, and sandbox-ml TERMINATE was disallowed by policy and tag instructions. One action, staging-api RESIZE, was rolled back after its health check took 850 ms, exceeding the 300 ms threshold. All other actions completed successfully. No pending approvals remain."
+  }
+}
