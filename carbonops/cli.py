@@ -71,6 +71,10 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     print(f"{config.load_policy(args.client).name}\n")
     print_outcome(outcome)
+    if args.llm:
+        for entry in outcome['state'].get('trace', []):
+            if entry['node'] in ('analyse', 'report'):
+                print(f"{entry['node'].title()}: {entry['summary']}")
     return 0
 
 
