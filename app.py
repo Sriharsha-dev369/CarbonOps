@@ -13,7 +13,7 @@ import pandas as pd
 import streamlit as st
 from dotenv import dotenv_values, load_dotenv
 
-from carbonops import audit, calc, config, graph
+from carbonops import audit, calc, config, graph, onboard
 from carbonops.fmt import action_label, evidence, inr
 from carbonops.models import Action, AuditEvent, Decision, ExecResult, Finding, Resource, Role
 from carbonops.moto_runtime import ensure_moto, is_sandbox
@@ -300,7 +300,9 @@ with st.sidebar:
     st.markdown('### CarbonOps')
     user = st.text_input('Your name', value='Priya').strip() or 'anonymous'
     role: Role = st.selectbox('Role', ROLES, index=1)
-    client = st.selectbox('Client', list(names), format_func=names.get)
+    if 'next_client' in st.session_state:          # set by onboarding; applied before the widget exists
+        st.session_state.client = st.session_state.pop('next_client')
+    client = st.selectbox('Client', list(names), format_func=names.get, key='client')
     st.divider()
     use_llm = st.toggle('LLM analyst', value=False, help='Let the LLM choose actions. Rules are used when it is off or fails.')
     demo = st.toggle('Demo mode (replay)', value=False,
@@ -535,3 +537,24 @@ with tabs[5]:
             'Protected': ', '.join(p.protected_envs), 'Never': ', '.join(p.never),
         } for p in policies]), hide_index=True, width='stretch')
         st.code((config.ROOT / 'policies' / f'{client}.yaml').read_text(encoding='utf-8'), language='yaml')
+
+        with st.form('onboard'):
+            st.markdown('**Onboard a client** — writes a policy from the template and a demo estate. No code changes.')
+            new_name = st.text_input('Client name', placeholder='Globex Corp')
+            c1, c2 = st.columns(2)
+            new_actions = c1.multiselect('Auto actions', ['STOP', 'SCHEDULE', 'RESIZE', 'SNAPSHOT'], default=['STOP'])
+            new_envs = c2.multiselect('Auto environments', ['dev', 'test', 'staging'], default=['dev'],
+                                      help='prod is always protected.')
+            c3, c4, c5 = st.columns(3)
+            new_limit = c3.number_input('Auto limit (₹/month)', min_value=0, max_value=10_00_000, value=30_000, step=5_000)
+            new_conf = c4.slider('Confidence threshold', 0.0, 1.0, 0.7, 0.05)
+            new_source = c5.selectbox('Copy demo estate from', list(names), format_func=names.get)
+            if st.form_submit_button('Onboard client', type='primary'):
+                try:
+                    slug = onboard.onboard(new_name, new_actions, new_envs, float(new_limit), float(new_conf), new_source)
+                except ValueError as e:
+                    st.error(f'Could not onboard: {e}')
+                else:
+                    st.session_state.next_client = slug
+                    st.session_state.flash = ('success', f'{new_name.strip()} onboarded. Same engine, new client, zero code.')
+                    st.rerun()

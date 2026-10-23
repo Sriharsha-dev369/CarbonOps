@@ -1,0 +1,12 @@
+# Starting point for clients onboarded from the Policy tab. The form fills in client, name,
+# auto_actions, auto_envs, auto_limit_inr_month and min_confidence_auto; the rest are safe defaults.
+client: new_client
+name: New Client
+auto_actions: [STOP]
+auto_envs: [dev]
+auto_limit_inr_month: 30000
+min_confidence_auto: 0.7
+protected_envs: [prod]
+allowed_actions: [STOP, SCHEDULE, RESIZE, SNAPSHOT, KEEP]
+never: [DELETE, TERMINATE]
+office_hours: {days: [mon, tue, wed, thu, fri], start: '09:00', end: '19:00', hours_per_week: 50}

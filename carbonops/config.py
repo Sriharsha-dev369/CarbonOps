@@ -128,10 +128,12 @@ def load_estate(client: str) -> tuple[list[Resource], dict[str, Metrics], dict[s
     `sim` is split off here so it never reaches a Resource, its tags, or the LLM.
     """
     path = estate_path(client)
-    raw = _read_yaml(path)
-    if raw['client'] != client:
-        raise ValueError(f'{path.name} declares client {raw["client"]!r}')
+    return parse_estate(_read_yaml(path), client, path.name)
 
+
+def parse_estate(raw: dict, client: str, source: str = 'estate') -> tuple[list[Resource], dict[str, Metrics], dict[str, dict]]:
+    if raw['client'] != client:
+        raise ValueError(f'{source} declares client {raw["client"]!r}')
     resources: list[Resource] = []
     metrics: dict[str, Metrics] = {}
     sims: dict[str, dict] = {}
@@ -140,7 +142,7 @@ def load_estate(client: str) -> tuple[list[Resource], dict[str, Metrics], dict[s
         m, sim = entry.pop('metrics', None), entry.pop('sim', None)
         r = Resource.model_validate({**entry, 'client': client})
         if any(x.id == r.id for x in resources):
-            raise ValueError(f'{path.name}: duplicate resource id {r.id!r}')
+            raise ValueError(f'{source}: duplicate resource id {r.id!r}')
         resources.append(r)
         if m is not None:
             metrics[r.id] = Metrics.model_validate(m)
