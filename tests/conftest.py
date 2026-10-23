@@ -57,3 +57,19 @@ def make_action(prices: config.Prices) -> Callable[..., Action]:
                       params=params, confidence=confidence)
 
     return _make
+
+
+@pytest.fixture
+def aws(monkeypatch, tmp_path):
+    """In-process AWS (moto mock_aws) with dummy credentials; demo state and audit go to tmp_path."""
+    from moto import mock_aws
+
+    monkeypatch.delenv('AWS_ENDPOINT_URL', raising=False)
+    monkeypatch.delenv('CARBONOPS_AWS', raising=False)
+    monkeypatch.setenv('AWS_ACCESS_KEY_ID', 'testing')
+    monkeypatch.setenv('AWS_SECRET_ACCESS_KEY', 'testing')
+    monkeypatch.setenv('AWS_DEFAULT_REGION', 'ap-south-1')
+    monkeypatch.setenv('CARBONOPS_STATE_DIR', str(tmp_path / 'state'))
+    monkeypatch.setenv('CARBONOPS_AUDIT_DIR', str(tmp_path / 'audit'))
+    with mock_aws():
+        yield tmp_path

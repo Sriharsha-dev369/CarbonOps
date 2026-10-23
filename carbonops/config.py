@@ -1,5 +1,6 @@
 """Load the YAML config, policies and demo estates into typed pydantic models."""
 
+import os
 from pathlib import Path
 from typing import Any
 
@@ -9,6 +10,15 @@ from pydantic import BaseModel, model_validator
 from carbonops.models import ActionType, Env, Metrics, Resource
 
 ROOT = Path(__file__).resolve().parent.parent
+
+
+def state_dir() -> Path:
+    """Where seed/provider keep local demo state (sim_state.json, snapshots.json)."""
+    return Path(os.environ.get('CARBONOPS_STATE_DIR') or ROOT / 'carbonops')
+
+
+def audit_path(client: str) -> Path:
+    return Path(os.environ.get('CARBONOPS_AUDIT_DIR') or ROOT / 'audit') / f'{client}.jsonl'
 
 
 class InstancePrice(BaseModel):
@@ -47,6 +57,14 @@ class Carbon(BaseModel):
     embodied_included: bool
 
 
+class Health(BaseModel):
+    namespace: str
+    metric: str
+    threshold_ms: float          # above this the change is rolled back
+    healthy_ms: float            # simulated reading when the change is fine
+    unhealthy_ms: float          # simulated reading when sim state says the change breaks the app
+
+
 class OfficeHours(BaseModel):
     days: list[str]
     start: str                   # 'HH:MM'
@@ -81,6 +99,10 @@ def load_prices(path: str | Path = 'config/prices.yaml') -> Prices:
 
 def load_carbon(path: str | Path = 'config/carbon.yaml') -> Carbon:
     return Carbon.model_validate(_read_yaml(path))
+
+
+def load_health(path: str | Path = 'config/health.yaml') -> Health:
+    return Health.model_validate(_read_yaml(path))
 
 
 def load_policy(client: str) -> Policy:

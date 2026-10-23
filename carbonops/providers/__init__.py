@@ -1,3 +1,3 @@
-from carbonops.providers.base import Provider
+from carbonops.providers.base import CloudProvider
 
-__all__ = ['Provider']
+__all__ = ['CloudProvider']

@@ -1,0 +1,7 @@
+# Post-change health signal. The demo simulates it: CarbonOps writes this custom CloudWatch metric
+# after every change and rolls back when it is above the threshold.
+namespace: CarbonOps/App
+metric: AppLatencyMs
+threshold_ms: 300
+healthy_ms: 120
+unhealthy_ms: 850

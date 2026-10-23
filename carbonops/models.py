@@ -62,11 +62,18 @@ class ExecResult(BaseModel):
     detail: str = ''
 
 
+class HealthCheck(BaseModel):
+    ok: bool
+    latency_ms: float
+    threshold_ms: float
+
+
 class AuditEvent(BaseModel):
     ts: str                      # ISO 8601
     actor: str                   # 'system' | user name
     role: Role | Literal['system']
-    kind: str                    # 'finding' | 'decision' | 'approval' | 'execution' | 'rollback' | 'report'
+    kind: str                    # 'run' | 'finding' | 'decision' | 'approval' | 'snapshot' | 'apply' |
+                                 # 'health_check' | 'rollback' | 'done' | 'skipped' | 'failed' | 'report' | 'error'
     payload: dict
     prev_hash: str = ''
     hash: str = ''

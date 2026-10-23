@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Literal
 
 from carbonops.models import Action, Decision, ExecResult, Role
-from carbonops.providers.base import Provider
+from carbonops.providers.base import CloudProvider as Provider
 
 
 def execute(
