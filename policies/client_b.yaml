@@ -1,0 +1,10 @@
+client: client_b
+name: Northbank Finance
+auto_actions: [STOP]                  # action types that may ever run without approval
+auto_envs: [dev]
+auto_limit_inr_month: 30000           # above this, needs approval
+min_confidence_auto: 0.7
+protected_envs: [prod]                # any change here is BLOCKED
+allowed_actions: [STOP, SCHEDULE, RESIZE, SNAPSHOT, KEEP]
+never: [DELETE, TERMINATE]
+office_hours: {days: [mon, tue, wed, thu, fri], start: '09:00', end: '19:00', hours_per_week: 50}

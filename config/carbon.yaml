@@ -1,0 +1,7 @@
+method: Cloud Carbon Footprint (CCF)
+min_watts_per_vcpu: 0.71
+max_watts_per_vcpu: 3.46
+memory_watts_per_gb: 0.392
+pue: 1.135
+grid_kg_per_kwh: 0.675                # CEA CO2 Baseline Database v22.0, FY 2025-26 (verify Table S)
+embodied_included: false

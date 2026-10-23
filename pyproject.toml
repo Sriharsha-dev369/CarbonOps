@@ -1,0 +1,25 @@
+[project]
+name = "carbonops"
+version = "0.1.0"
+description = "FinOps + GreenOps agent that finds cloud waste, prices it in ₹ and kg CO₂e, and acts under client policy."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "boto3>=1.43.118",
+    "langgraph>=1.2.16",
+    "moto[server]>=5.2.4",
+    "openai>=3.37.0",
+    "pydantic>=2.14.1",
+    "python-dotenv>=1.2.4",
+    "pyyaml>=6.0.3",
+    "streamlit>=1.66.1",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+]

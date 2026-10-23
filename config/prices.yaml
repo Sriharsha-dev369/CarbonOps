@@ -1,0 +1,15 @@
+region: ap-south-1
+currency_rate_inr_per_usd: 94.5      # checked 23 Oct 2026
+hours_per_month: 730
+instances:                            # Linux on-demand USD/hour, AWS Mumbai price file, checked 23 Oct 2026
+  t3.large:   {usd_hour: 0.0896, vcpu: 2, mem_gb: 8}
+  t3.xlarge:  {usd_hour: 0.1792, vcpu: 4, mem_gb: 16}
+  m5.large:   {usd_hour: 0.101,  vcpu: 2, mem_gb: 8}
+  m5.xlarge:  {usd_hour: 0.202,  vcpu: 4, mem_gb: 16}
+  m5.2xlarge: {usd_hour: 0.404,  vcpu: 8, mem_gb: 32}
+downsize:                             # one step down
+  m5.2xlarge: m5.xlarge
+  m5.xlarge: m5.large
+  t3.xlarge: t3.large
+volumes:
+  gp3_usd_gb_month: 0.0912            # UNCONFIRMED (third-party source); show no ₹ for volumes until confirmed
