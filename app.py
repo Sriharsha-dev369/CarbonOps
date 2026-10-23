@@ -304,13 +304,17 @@ with st.sidebar:
         st.session_state.client = st.session_state.pop('next_client')
     client = st.selectbox('Client', list(names), format_func=names.get, key='client')
     st.divider()
-    use_llm = st.toggle('LLM analyst', value=False, help='Let the LLM choose actions. Rules are used when it is off or fails.')
     demo = st.toggle('Demo mode (replay)', value=False,
                      help='Replay recorded LLM answers: no API calls, works offline. Turns the LLM analyst on.')
+    if demo:   # a separate, locked widget so the live toggle keeps its own setting
+        use_llm = st.toggle('LLM analyst', value=True, disabled=True, key='llm_in_demo',
+                            help='On in Demo mode, using recorded answers.')
+    else:
+        use_llm = st.toggle('LLM analyst', value=False, key='llm_live',
+                            help='Let the LLM choose actions. Rules are used when it is off or fails.')
     record = role == 'Admin' and not demo and st.checkbox(
         'Record replay', help='Admin: save live LLM answers to replay/ so Demo mode can play them offline.')
     os.environ['REPLAY_MODE'] = 'play' if demo else 'record' if record else replay_default()
-    use_llm = use_llm or demo
     st.divider()
     # Tooltips only on disabled buttons: a focused button keeps its tooltip open over the next one.
     run_clicked = st.button('Run analysis', type='primary', disabled=role == 'Viewer', width='stretch',
