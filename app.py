@@ -75,6 +75,20 @@ CSS = """
 .co-v-AUTO,.co-v-NONE{background:#E6F4EC;color:#145C3A;border:2px solid #B9DEC9}
 .co-explainer{color:#33413A;font-style:italic;margin:2px 0 8px}
 .co-prodline{font-weight:600;margin:4px 0 10px}
+.co-tracewrap{overflow-x:auto;margin:4px 0 12px}
+.co-trace{width:100%;border-collapse:collapse;font-size:0.85rem;color:#17211C}
+.co-trace th{text-align:left;font-size:0.7rem;text-transform:uppercase;letter-spacing:0.05em;color:#6B7570;
+  border-bottom:1px solid #DCE3DF;padding:6px 8px;font-weight:600;white-space:nowrap}
+.co-trace td{border-bottom:1px solid #EEF1EF;padding:7px 8px;vertical-align:top}
+.co-trace td.co-why{color:#55605A;max-width:300px}
+.co-trace tr.over-BLOCK td:first-child{box-shadow:inset 4px 0 #C2372B}
+.co-trace tr.over-APPROVE td:first-child{box-shadow:inset 4px 0 #E3A008}
+.co-trace tr.over-BLOCK{background:#FDF6F5}
+.co-trace tr.over-APPROVE{background:#FFFBF0}
+.co-flag{display:block;font-size:0.72rem;font-weight:700;margin-top:3px;white-space:nowrap}
+.co-flag.BLOCK{color:#A12A20}
+.co-flag.APPROVE{color:#875A00}
+.co-counter{font-size:0.95rem;margin:2px 0 6px}
 </style>
 """
 
@@ -341,6 +355,81 @@ def rt_clear(client: str, user: str, role: Role) -> None:
         st.session_state.flash = ('error', f'Could not remove the planted tags: {e}')
 
 
+def overruled(view: View, a: Action) -> str | None:
+    """'BLOCK' or 'APPROVE' when the guard did not let a proposal run as proposed, else None.
+
+    A proposal sent for approval only because its own confidence was low is accepted as-is: the
+    analyst itself asked for a human.
+    """
+    if a.proposed_by == 'tag':
+        return None
+    tier = view.decisions[a.id].tier
+    if tier == 'BLOCK':
+        return 'BLOCK'
+    if tier == 'APPROVE' and a.confidence >= config.load_policy(view.state['client']).min_confidence_auto:
+        return 'APPROVE'
+    return None
+
+
+def result_text(view: View, a: Action) -> str:
+    if a.id in view.results:
+        r = view.results[a.id]
+        return badge(r.status, STATUS_LABEL[r.status])
+    if a.id in view.pending_ids:
+        return badge('APPROVE', 'Pending')
+    if view.approvals.get(a.id) == 'reject':
+        return badge('SKIPPED', 'Rejected')
+    return badge('SKIPPED', 'Not run')
+
+
+def render_trace(view: View) -> None:
+    """One row per resource: evidence → finding → analyst proposal → guard decision → AWS result."""
+    llm_on = bool(view.state.get('use_llm'))
+    metrics = view.state.get('metrics', {})
+    proposals = [a for a in view.actions.values() if a.proposed_by != 'tag']
+    n_over = sum(overruled(view, a) is not None for a in proposals)
+    who = 'AI proposals' if llm_on else 'Proposals (rules, LLM off)'
+    st.html(f'<div class="co-counter"><b>{who}: {len(proposals)}</b> · accepted as-is: {len(proposals) - n_over} · '
+            f'<b>overruled by guard: {n_over}</b></div>')
+    rows = []
+    for r in view.resources.values():
+        mine = [a for a in view.actions.values() if a.resource_id == r.id]
+        proposal = next((a for a in mine if a.proposed_by != 'tag'), None)
+        requested = [a for a in mine if a.proposed_by == 'tag']
+        m = metrics.get(r.id)
+        if r.kind == 'volume':
+            ev = f"{r.size_gb} GB · {'attached' if r.attached else 'unattached'}"
+        elif m is not None:
+            ev = f'avg {m.cpu_avg:g}% · p95 {m.cpu_p95:g}% · max {m.cpu_max:g}% · {m.hours_per_week:g} h/wk'
+        else:
+            ev = r.state
+        f = view.findings.get(r.id)
+        finding = f.kind.replace('_', ' ').title() if f else 'None'
+        if proposal is None:
+            prop = '—' if not f else 'No proposal'
+            decided, result, why, over = '—', '—', 'No finding: left alone.' if not f else '', None
+        else:
+            by = 'LLM' if proposal.proposed_by == 'llm' else 'rules (fallback)' if llm_on else 'rules'
+            label = action_label(proposal.type, proposal.params, r.instance_type)
+            prop = f'<b>{esc(label)}</b><br>{proposal.confidence:.0%} · {esc(by)}'
+            d = view.decisions[proposal.id]
+            decided = badge(d.tier, TIER_LABEL[d.tier])
+            why = esc(d.reasons[0])
+            result = result_text(view, proposal)
+            over = overruled(view, proposal)
+        for a in requested:
+            prop += f'<br><span style="color:#A12A20">Tag asked: <b>{esc(a.type)}</b></span>'
+            decided += f'<br>{esc(a.type)} → {badge("BLOCK", TIER_LABEL[view.decisions[a.id].tier])}'
+        flag = f'<span class="co-flag {over}">⚑ Guard overruled the AI</span>' if over else ''
+        env = badge('prod' if r.env == 'prod' else 'env', r.env)
+        rows.append(f'<tr class="{f"over-{over}" if over else ""}"><td><b>{esc(r.id)}</b> {env}{flag}</td>'
+                    f'<td>{esc(ev)}</td><td>{esc(finding)}</td><td>{prop}</td><td>{decided}</td>'
+                    f'<td class="co-why">{why}</td><td>{result}</td></tr>')
+    st.html(f"""<div class="co-tracewrap"><table class="co-trace">
+      <tr><th>Resource</th><th>Evidence (7 days)</th><th>Finding</th><th>Analyst proposed</th><th>Guard decided</th>
+      <th>Because</th><th>AWS result</th></tr>{''.join(rows)}</table></div>""")
+
+
 def render_attack(view: View, attack: dict) -> None:
     """Verdict banner and what each layer did with the planted instruction."""
     rid = attack['resource_id']
@@ -477,6 +566,9 @@ with tabs[0]:
         if s.get('use_llm') and analysis:
             st.caption(f'Analyst: {analysis}')
 
+        st.html('<div class="co-section">Agent trace · the AI suggests, the rules decide</div>')
+        render_trace(view)
+
         for tier, title in (('AUTO', 'Auto-executed'), ('APPROVE', 'Needs approval'), ('BLOCK', 'Blocked')):
             group = [a for a in view.actions.values() if view.decisions[a.id].tier == tier]
             if group:
@@ -484,17 +576,10 @@ with tabs[0]:
                 for a in group:
                     action_card(view, a)
 
-        with st.expander('Agent trace'):
+        with st.expander('Pipeline steps (LangGraph nodes)'):
             st.dataframe(pd.DataFrame([{
                 'Stage': dict(graph.STAGES)[t['stage']], 'Node': t['node'], 'What happened': t['summary'], 'ms': t['ms'],
             } for t in s.get('trace', [])]), hide_index=True, width='stretch')
-            proposals = [a for a in view.actions.values() if a.proposed_by != 'tag']
-            if proposals:
-                st.markdown('**Proposals**')
-                st.dataframe(pd.DataFrame([{
-                    'Resource': a.resource_id, 'Action': action_label(a.type, a.params),
-                    'Proposed by': a.proposed_by, 'Confidence': f'{a.confidence:.0%}', 'Reason': a.reason,
-                } for a in proposals]), hide_index=True, width='stretch')
 
 # --- Approvals -------------------------------------------------------------------
 with tabs[1]:
