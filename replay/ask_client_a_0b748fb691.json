@@ -1,0 +1,14 @@
+{
+  "replay_key": "ask_client_a_0b748fb691",
+  "input_sha256": "ff31382fa63dfda417e5b04f0cc1762f0512adb77781c8f0fe640e03269d0056",
+  "response": {
+    "answer": "The actions that required approval were staging-web RESIZE, staging-api RESIZE, reporting-vm SCHEDULE, sandbox-ml STOP, and vol-orphan-01 SNAPSHOT [e14, e15, e16, e17, e19].",
+    "cited": [
+      "e14",
+      "e15",
+      "e16",
+      "e17",
+      "e19"
+    ]
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "replay_key": "ask_client_a_4d378748a2",
+  "input_sha256": "b4e139a2194d108754900213263711a2d41803161f52319ca48f928a77e37796",
+  "response": {
+    "answer": "The staging-api RESIZE was rolled back because its health check failed with 850 ms latency, exceeding the 300 ms threshold [e44][e45].",
+    "cited": [
+      "e44",
+      "e45"
+    ]
+  }
+}

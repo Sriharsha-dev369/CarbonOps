@@ -4,6 +4,7 @@ import html
 import json
 import logging
 import os
+import re
 import time
 from collections import Counter
 from datetime import datetime
@@ -13,7 +14,7 @@ import pandas as pd
 import streamlit as st
 from dotenv import dotenv_values, load_dotenv
 
-from carbonops import audit, calc, config, executor, graph, guard, onboard, redteam, whatif
+from carbonops import ask, audit, calc, config, executor, graph, guard, onboard, redteam, whatif
 from carbonops.fmt import action_label, evidence, inr
 from carbonops.models import Action, AuditEvent, Decision, ExecResult, Finding, Resource, Role
 from carbonops.moto_runtime import ensure_moto, is_sandbox
@@ -279,6 +280,8 @@ def event_summary(e: AuditEvent) -> str:
             return f"Red team attack on {p.get('resource_id')}: prod resources changed {p.get('prod_changed')}"
         case 'redteam_clear':
             return f"Red team tags removed from {', '.join(p.get('resource_ids') or []) or 'nothing'}"
+        case 'ask':
+            return f"Asked: “{p.get('question')}” ({'LLM answer' if p.get('source') == 'llm' else 'events shown'})"
         case 'policy_saved':
             return f"Custom policy saved to {p.get('path')}"
     return json.dumps(p)[:160]
@@ -383,6 +386,59 @@ def undo_confirm(view: View, where: str) -> None:
         c1.button('Confirm undo', key=f'undo-yes-{where}', type='primary', on_click=do_undo,
                   args=(client, a.id, user, role), width='stretch')
         c2.button('Cancel', key=f'undo-no-{where}', on_click=cancel_undo, width='stretch')
+
+
+def asked(thread_id: str) -> list[dict]:
+    return st.session_state.setdefault('asks', {}).setdefault(thread_id, [])
+
+
+def do_ask(client: str, question: str, user: str, role: Role, use_llm: bool) -> None:
+    """Answer from this run's audit log and totals; every question is itself audited."""
+    outcome = outcomes().get(client)
+    question = (question or '').strip()
+    if outcome is None or not question:
+        return
+    view = View(outcome, undone_for(outcome['thread_id']))
+    path = outcome['state']['audit_path']
+    try:
+        res = ask.answer(question, client, audit.read_all(path), list(view.resources), list(view.results.values()),
+                         view.totals or {}, use_llm=use_llm)
+        audit.append(AuditEvent(ts=datetime.now().astimezone().isoformat(timespec='seconds'), actor=user, role=role,
+                                kind='ask', payload={'question': question, 'source': res['source'],
+                                                     'cited': res['cited']}), path)
+        asked(outcome['thread_id']).append({'q': question, **res})
+    except Exception as e:
+        log.error('ask failed', exc_info=True)
+        st.session_state.flash = ('error', f'Could not answer: {e}')
+
+
+def local_time(ts: str) -> str:
+    return datetime.fromisoformat(ts).astimezone().strftime('%H:%M:%S')
+
+
+def render_answer(item: dict) -> None:
+    times = {eid: local_time(e.ts) for eid, e in item['events']}
+    with st.chat_message('user'):
+        st.markdown(item['q'])
+    with st.chat_message('assistant', avatar='🌱'):
+        if item['answer']:
+            # [e14] -> the event's time, so every claim points at a line in the audit log
+            def cite(m: re.Match) -> str:
+                found = dict.fromkeys(times[i] for i in re.findall(r'e\d+', m.group(0)) if i in times)
+                return f"*({', '.join(found)})*" if found else ''
+
+            text = re.sub(r'(?:\s*\[e\d+(?:\s*,\s*e\d+)*\])+', lambda m: ' ' + cite(m), item['answer'])
+            text = re.sub(r' +([.,;])', r'\1', text).strip()
+            st.markdown(text.replace('$', '\\$'))
+            used = [(eid, e) for eid, e in item['events'] if eid in item['cited']] or item['events']
+        else:
+            st.markdown(f"{item['note'] or ask.NOT_FOUND}" if item['events'] else ask.NOT_FOUND)
+            used = item['events']
+        if used:
+            st.dataframe(pd.DataFrame([{'Time': local_time(e.ts), 'Kind': e.kind, 'Summary': event_summary(e)}
+                                       for _, e in used]), hide_index=True, width='stretch')
+        if item['answer']:
+            st.caption('Answered by the LLM from the audit events above; numbers checked against the data.')
 
 
 def attacks() -> dict[str, dict]:
@@ -802,6 +858,22 @@ with tabs[4]:
         st.info('The report is written when the run completes. Resolve the pending approvals first.')
     else:
         st.info('Run an analysis to get a report.')
+
+    if view.totals:
+        st.html('<div class="co-section">Ask CarbonOps</div>')
+        st.caption('Answers come only from this run’s audit log and computed totals, citing the events used.')
+        qcols = st.columns(len(ask.CHIPS))
+        for col, chip in zip(qcols, ask.CHIPS):
+            col.button(chip, key=f'chip-{chip}', on_click=do_ask, args=(client, chip, user, role, use_llm),
+                       width='stretch')
+        with st.form('ask-form', clear_on_submit=True, border=False):
+            fc1, fc2 = st.columns([5, 1])
+            typed = fc1.text_input('Your question', placeholder='e.g. Who approved the staging-web resize?',
+                                   label_visibility='collapsed')
+            if fc2.form_submit_button('Ask', type='primary', width='stretch') and typed.strip():
+                do_ask(client, typed, user, role, use_llm)
+        for item in reversed(asked(view.outcome['thread_id'])):
+            render_answer(item)
 
 # --- Red team --------------------------------------------------------------------
 with tabs[5]:

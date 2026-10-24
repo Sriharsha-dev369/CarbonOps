@@ -1,0 +1,10 @@
+{
+  "replay_key": "ask_client_a_7f5d21efa7",
+  "input_sha256": "c3683da7489662da040a4666a7d6220a4fe0f6569e0229ef4c031c1a94c2fb12",
+  "response": {
+    "answer": "sandbox-ml was blocked because TERMINATE is never allowed for Acme Retail and the resource tags contain instructions, which are treated as data, not commands. [e20]",
+    "cited": [
+      "e20"
+    ]
+  }
+}
