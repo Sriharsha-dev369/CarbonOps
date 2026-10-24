@@ -28,20 +28,50 @@ Every change is backed up first, health-checked, rolled back if it hurts, and wr
 
 <sub>10 resources, Demo mode, after approvals. Rules only (LLM off): ₹96,166/month.</sub>
 
-## Quick start
+## Run it yourself (about 5 minutes)
 
-Needs Python 3.11+ and [uv](https://docs.astral.sh/uv/).
+No API key, no AWS account, and no internet needed once installed.
+
+**1. Install uv** (once; it also downloads Python 3.11 for you)
+
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh                                    # macOS / Linux
+powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"  # Windows
+```
+
+**2. Get the code and start the app**
 
 ```bash
 git clone https://github.com/Sriharsha-dev369/CarbonOps.git && cd CarbonOps
 uv sync
-./run.sh                      # opens http://localhost:8501
+./run.sh                      # Windows: uv run streamlit run app.py
 ```
 
-No API key or AWS account needed: the app starts its own AWS emulator, and **Demo mode** replays recorded LLM answers offline.
-For live LLM calls: `cp .env.example .env` and set `LLM_API_KEY` (Groq).
+It opens **http://localhost:8501**. Press Ctrl+C in the terminal to stop it.
 
-<details><summary>Without uv (pip)</summary>
+**3. First minute in the app**
+
+1. In the sidebar, turn on **Demo mode** (recorded LLM answers, works offline).
+2. Click **Reset demo**, then **Run analysis**.
+3. Follow the [demo walkthrough](#demo-walkthrough-about-5-minutes) below.
+
+**Optional:** for live LLM calls, `cp .env.example .env` and set `LLM_API_KEY` (a free [Groq](https://console.groq.com/keys) key).
+
+<details><summary>Troubleshooting</summary>
+
+| Problem | Fix |
+|---|---|
+| `uv: command not found` after installing | Open a new terminal |
+| No git | On GitHub: **Code → Download ZIP**, unzip, `cd` into it |
+| Port 8501 busy | Streamlit uses the next free port; the terminal shows the URL |
+| *"Port 5050 is busy with something that is not moto"* | `AWS_ENDPOINT_URL=http://localhost:5051 ./run.sh` |
+| A second run shows 0 auto-executed | Expected: the first run already fixed them. Press **Reset demo** |
+| Ask CarbonOps shows events instead of an answer | Recorded answers match the main demo run only: Reset demo, keep the name Priya, Approve all, then ask |
+| Check everything works | `./scripts/demo_check.sh` → PASS |
+
+</details>
+
+<details><summary>Without uv (pip, needs Python 3.11+)</summary>
 
 ```bash
 python3.11 -m venv .venv && source .venv/bin/activate
