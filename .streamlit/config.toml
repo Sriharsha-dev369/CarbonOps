@@ -16,6 +16,9 @@ gatherUsageStats = false
 
 [logger]
 level = "error"
+# Also hides Streamlit's "install agent skills" promo, which otherwise pops up in the app
+# on any machine with an AI coding assistant installed (it would show in the demo).
+hideWelcomeMessage = true
 
 [server]
 # Only this machine can open the app (safer on shared venue Wi-Fi).

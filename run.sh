@@ -3,4 +3,5 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 unset VIRTUAL_ENV   # an activated venv from another project would make uv print a warning
+echo "Starting CarbonOps: it opens in your browser (http://localhost:8501 unless that port is busy). Ctrl+C stops it."
 exec uv run streamlit run app.py "$@"
