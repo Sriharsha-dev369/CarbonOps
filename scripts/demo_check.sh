@@ -28,6 +28,8 @@ expect "Northbank Finance: 1 auto · 7 approval · 2 blocked · 1 none" "$out" \
   "AUTO 1 · APPROVE 7 · BLOCK 2 · no finding 1"
 
 for client in client_a client_b; do
+  # Fresh estate again: recordings match only the seeded estate (and the app may share this AWS emulator).
+  uv run python -m carbonops.cli reset --client "$client" >/dev/null 2>&1
   out=$(REPLAY_MODE=play LLM_API_KEY= uv run python -m carbonops.cli run --client "$client" --approve-all --llm 2>&1)
   expect "$client with replayed LLM (offline)" "$out" "LLM proposed 9 of 9 actions" "Report written by the LLM"
 done
