@@ -13,7 +13,7 @@ import pandas as pd
 import streamlit as st
 from dotenv import dotenv_values, load_dotenv
 
-from carbonops import audit, calc, config, executor, graph, guard, onboard, redteam
+from carbonops import audit, calc, config, executor, graph, guard, onboard, redteam, whatif
 from carbonops.fmt import action_label, evidence, inr
 from carbonops.models import Action, AuditEvent, Decision, ExecResult, Finding, Resource, Role
 from carbonops.moto_runtime import ensure_moto, is_sandbox
@@ -600,7 +600,7 @@ st.html(f"""<div class="co-header">
   <div class="co-who">Client <b>{esc(names[client])}</b> · Signed in as <b>{esc(user)}</b> {badge('role', role)}</div>
 </div>""")
 
-tabs = st.tabs(['Run', 'Approvals', 'Savings', 'Audit', 'Report', 'Red team', 'Policy'])
+tabs = st.tabs(['Run', 'Approvals', 'Savings', 'Audit', 'Report', 'Red team', 'What-if', 'Policy'])
 with tabs[0]:
     strip_slot = st.empty()
 
@@ -843,8 +843,74 @@ with tabs[5]:
     if attack and view.outcome and view.outcome['thread_id'] == attack['thread_id']:
         render_attack(view, attack)
 
-# --- Policy ----------------------------------------------------------------------
+# --- What-if ---------------------------------------------------------------------
 with tabs[6]:
+    st.caption('Same engine, different risk appetite: see what each policy saves and how much human review it needs.')
+    if not view.totals:
+        st.info('Run an analysis first: the simulator replays the guard over that run’s actions. '
+                'No AWS calls, no LLM, nothing is executed.')
+    else:
+        current = config.load_policy(client)
+        knobs = ('STOP', 'SCHEDULE', 'RESIZE')
+        c1, c2 = st.columns(2)
+        limit = c1.slider('Auto limit (₹/month per action)', 0, 50_000,
+                          int(min(50_000, round(current.auto_limit_inr_month / 5_000) * 5_000)), 5_000,
+                          key=f'wi-limit-{client}', format='₹%d')
+        conf = c2.slider('Minimum confidence for auto', 0.50, 0.95,
+                         float(min(0.95, max(0.50, current.min_confidence_auto))), 0.05, key=f'wi-conf-{client}')
+        c3, c4 = st.columns(2)
+        with c3:
+            st.markdown('**Auto actions**')
+            acols = st.columns(len(knobs))
+            picked_actions = [t for col, t in zip(acols, knobs)
+                              if col.checkbox(t, value=t in current.auto_actions, key=f'wi-a-{client}-{t}')]
+        with c4:
+            st.markdown('**Auto environments**')
+            ecols = st.columns(4)
+            picked_envs = [e for col, e in zip(ecols, ('dev', 'test', 'staging'))
+                           if col.checkbox(e, value=e in current.auto_envs, key=f'wi-e-{client}-{e}')]
+            ecols[3].checkbox('prod 🔒', value=False, disabled=True, key=f'wi-e-{client}-prod',
+                              help='prod is always blocked by design.')
+        sim = whatif.adjust(current, auto_limit_inr_month=float(limit), min_confidence_auto=round(conf, 2),
+                            auto_actions=picked_actions + [t for t in current.auto_actions if t not in knobs],
+                            auto_envs=picked_envs)
+        actions = list(view.actions.values())
+        decisions = {d.action_id: d for d in whatif.simulate(actions, view.resources, sim)}
+        now, then = whatif.summary(actions, list(view.decisions.values())), whatif.summary(actions, list(decisions.values()))
+        m = st.columns(5)
+        m[0].metric('AUTO', then['auto'], then['auto'] - now['auto'], delta_color='off', border=True)
+        m[1].metric('APPROVE', then['approve'], then['approve'] - now['approve'], delta_color='off', border=True,
+                    help='Human approvals needed.')
+        m[2].metric('BLOCK', then['block'], then['block'] - now['block'], delta_color='off', border=True)
+        m[3].metric('Auto-run ₹/month', inr(then['auto_inr_month']), border=True,
+                    help=f"Current policy: {inr(now['auto_inr_month'])}/month.")
+        m[4].metric('Human ₹/month', inr(then['human_inr_month']), border=True,
+                    help=f"Current policy: {inr(now['human_inr_month'])}/month.")
+        changed = [a for a in actions if decisions[a.id].tier != view.decisions[a.id].tier]
+        if changed:
+            st.markdown(f'**{len(changed)} action(s) change tier vs the current policy**')
+            st.dataframe(pd.DataFrame([{
+                'Resource': a.resource_id, 'Action': action_label(a.type, a.params, view.resources[a.resource_id].instance_type),
+                '₹/month': inr(a.inr_month), 'Current': TIER_LABEL[view.decisions[a.id].tier],
+                'What-if': TIER_LABEL[decisions[a.id].tier], 'Why': decisions[a.id].reasons[0],
+            } for a in changed]), hide_index=True, width='stretch')
+        else:
+            st.markdown('**No action changes tier** with these settings.')
+        locked = [a for a in actions if whatif.always_blocked(a, view.resources[a.resource_id], sim)]
+        if locked:
+            st.caption('🔒 Always blocked by design, whatever the sliders say: ' + ' · '.join(
+                f'{a.resource_id} {a.type}' for a in locked))
+        if st.button('Save as new policy', disabled=role != 'Admin',
+                     help=None if role == 'Admin' else 'Only an Admin can save a policy.'):
+            try:
+                saved = whatif.save(sim, user, role)
+                st.success(f'Saved to {saved.relative_to(config.ROOT)}. The active policy is unchanged.')
+            except Exception as e:
+                log.error('policy save failed', exc_info=True)
+                st.error(f'Could not save the policy: {e}')
+
+# --- Policy ----------------------------------------------------------------------
+with tabs[7]:
     if role != 'Admin':
         st.info('Only an Admin can view client policies.')
     else:
