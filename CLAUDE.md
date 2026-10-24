@@ -127,3 +127,4 @@ Pitch line: *"Two LLM agents for judgement; plain code for money and safety."*
 - 24 Oct 01:40 — phase G added to `SPEC_PHASE2.md`: watch mode with "Simulate new idle VM" (autonomy proof) and a CGI Portfolio tab. Build only after phase F passes.
 - **Next:** `SPEC_PHASE2.md` step 0, then phases A → F, then G. Minimum tonight: phase C done (rules-only demo clickable). Push to private GitHub.
 - 24 Oct 12:35 — phase 3 (`Spec3.md`): F1 red team, F2 agent trace, F3 undo, F4 what-if, F5 Ask CarbonOps all shipped; final tag `stable-6`; 147 tests passing, `demo_check.sh` PASS.
+- 24 Oct 16:24 — final checks: README covers phase 3 + "Verify it yourself", `scripts/aws_state.py`, demo_check key scan fixed (it could never fail). Fresh clone: demo_check PASS, 147 tests, all UI click-throughs pass. Pushed to github.com/Sriharsha-dev369/CarbonOps (public).
