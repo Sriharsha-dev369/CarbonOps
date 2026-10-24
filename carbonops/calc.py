@@ -82,7 +82,7 @@ def totals(
     Keys:
       auto, approve, block      int   - decisions per tier (tag decisions included)
       no_finding                int   - resources with no finding
-      done, rolled_back, failed, skipped int - results per status
+      done, rolled_back, failed, skipped, undone int - results per status
       inr_month, inr_year, kgco2e_month, kgco2e_year  float - realised: actions whose result is DONE
       pending_inr_month, pending_inr_year, pending_kgco2e_month, pending_kgco2e_year
                                 float - APPROVE actions still awaiting a human verdict
@@ -107,7 +107,7 @@ def totals(
         'auto': tiers.count('AUTO'), 'approve': tiers.count('APPROVE'), 'block': tiers.count('BLOCK'),
         'no_finding': sum(r.id not in with_finding for r in resources),
         'done': statuses.count('DONE'), 'rolled_back': statuses.count('ROLLED_BACK'),
-        'failed': statuses.count('FAILED'), 'skipped': statuses.count('SKIPPED'),
+        'failed': statuses.count('FAILED'), 'skipped': statuses.count('SKIPPED'), 'undone': statuses.count('UNDONE'),
         'inr_month': round(inr, 2), 'inr_year': round(inr * 12, 2),
         'kgco2e_month': round(kgco2e, 3), 'kgco2e_year': round(kgco2e * 12, 2),
         'pending_inr_month': round(p_inr, 2), 'pending_inr_year': round(p_inr * 12, 2),

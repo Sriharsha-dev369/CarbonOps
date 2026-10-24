@@ -9,7 +9,7 @@ ActionType = Literal['STOP', 'SCHEDULE', 'RESIZE', 'SNAPSHOT', 'KEEP', 'DELETE',
 FindingKind = Literal['IDLE', 'ALWAYS_ON', 'OVERSIZED', 'UNATTACHED']
 Tier = Literal['AUTO', 'APPROVE', 'BLOCK']
 Role = Literal['Viewer', 'Engineer', 'Approver', 'Admin']
-ExecStatus = Literal['DONE', 'ROLLED_BACK', 'FAILED', 'SKIPPED']
+ExecStatus = Literal['DONE', 'ROLLED_BACK', 'FAILED', 'SKIPPED', 'UNDONE']
 
 
 class Resource(BaseModel):
@@ -60,6 +60,7 @@ class ExecResult(BaseModel):
     action_id: str
     status: ExecStatus
     detail: str = ''
+    snapshot_id: str | None = None   # restore point taken before the change; Undo restores it
 
 
 class HealthCheck(BaseModel):
@@ -73,7 +74,8 @@ class AuditEvent(BaseModel):
     actor: str                   # 'system' | user name
     role: Role | Literal['system']
     kind: str                    # 'run' | 'finding' | 'analysis' | 'decision' | 'approval' | 'snapshot' | 'apply' |
-                                 # 'health_check' | 'rollback' | 'done' | 'skipped' | 'failed' | 'report' | 'error'
+                                 # 'health_check' | 'rollback' | 'done' | 'skipped' | 'failed' | 'report' | 'error' | 'undo' |
+                                 # 'redteam_plant' | 'redteam_attack' | 'redteam_clear' | 'policy_saved'
     payload: dict
     prev_hash: str = ''
     hash: str = ''

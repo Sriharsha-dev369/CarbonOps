@@ -71,10 +71,10 @@ def execute(
             detail = (f'Health check failed: {health.latency_ms:.0f} ms > {health.threshold_ms:.0f} ms threshold. '
                       f'Restored from {snapshot_id}.')
             log('rollback', snapshot_id=snapshot_id, reason=detail)
-            return ExecResult(action_id=action.id, status='ROLLED_BACK', detail=detail)
+            return ExecResult(action_id=action.id, status='ROLLED_BACK', detail=detail, snapshot_id=snapshot_id)
         detail = f'Applied; health check {health.latency_ms:.0f} ms ≤ {health.threshold_ms:.0f} ms.'
         log('done', detail=detail)
-        return ExecResult(action_id=action.id, status='DONE', detail=detail)
+        return ExecResult(action_id=action.id, status='DONE', detail=detail, snapshot_id=snapshot_id)
     except Exception as e:
         detail = f'{type(e).__name__}: {e}'
         if snapshot_id:
@@ -86,3 +86,23 @@ def execute(
                 detail += f' Restore also failed: {restore_error}'
         log('failed', error=detail)
         return ExecResult(action_id=action.id, status='FAILED', detail=detail)
+
+
+def undo(action: Action, result: ExecResult, provider: CloudProvider, audit: str | Path, by: str,
+         role: Role) -> ExecResult:
+    """Put a DONE action back to its restore point. Approver or Admin only; raises ValueError otherwise.
+
+    Returns the action's new result (UNDONE); audit event `undo` records who undid it.
+    """
+    if role not in APPROVER_ROLES:
+        raise ValueError(f'{role} cannot undo; only Approver or Admin.')
+    if result.action_id != action.id or result.status != 'DONE' or not result.snapshot_id:
+        raise ValueError(f'{action.id} has no completed change to undo.')
+    provider.restore(action.resource_id, result.snapshot_id)
+    detail = f'Undone by {by} ({role}): restored from {result.snapshot_id}.'
+    audit_log.append(AuditEvent(
+        ts=datetime.now(timezone.utc).isoformat(timespec='seconds'), actor=by, role=role, kind='undo',
+        payload={'action_id': action.id, 'resource_id': action.resource_id, 'type': action.type,
+                 'snapshot_id': result.snapshot_id},
+    ), audit)
+    return ExecResult(action_id=action.id, status='UNDONE', detail=detail, snapshot_id=result.snapshot_id)

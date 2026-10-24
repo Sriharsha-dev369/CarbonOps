@@ -13,7 +13,7 @@ import pandas as pd
 import streamlit as st
 from dotenv import dotenv_values, load_dotenv
 
-from carbonops import audit, calc, config, graph, guard, onboard, redteam
+from carbonops import audit, calc, config, executor, graph, guard, onboard, redteam
 from carbonops.fmt import action_label, evidence, inr
 from carbonops.models import Action, AuditEvent, Decision, ExecResult, Finding, Resource, Role
 from carbonops.moto_runtime import ensure_moto, is_sandbox
@@ -27,7 +27,8 @@ APPROVERS = ('Approver', 'Admin')
 RESETTERS = ('Engineer', 'Admin')
 TIER_LABEL = {'AUTO': 'Auto', 'APPROVE': 'Needs approval', 'BLOCK': 'Blocked'}
 TIER_ICON = {'AUTO': '🟢', 'APPROVE': '🟠', 'BLOCK': '🔴'}
-STATUS_LABEL = {'DONE': 'Done', 'ROLLED_BACK': 'Rolled back', 'SKIPPED': 'Skipped', 'FAILED': 'Failed'}
+STATUS_LABEL = {'DONE': 'Done', 'ROLLED_BACK': 'Rolled back', 'SKIPPED': 'Skipped', 'FAILED': 'Failed',
+                'UNDONE': 'Undone'}
 STAGE_HINT = {'ingest': 'Read estate & metrics', 'decide': 'Detect · analyse · price · guard',
               'act': 'Execute · approve · verify', 'report': 'Summarise'}
 # Savings chart: one validated palette (dataviz validator, light surface).
@@ -47,6 +48,7 @@ CSS = """
 .co-APPROVE{background:#FDF3DC;color:#875A00;border-color:#F0D58E}
 .co-BLOCK,.co-FAILED{background:#FBE7E6;color:#A12A20;border-color:#F0BDB8}
 .co-ROLLED_BACK{background:#EFE8FA;color:#5B3A99;border-color:#D3C3F0}
+.co-UNDONE{background:#E6EEF9;color:#24508F;border-color:#C3D4EE}
 .co-SKIPPED,.co-env{background:#EFEFEC;color:#4A4A45;border-color:#DCDCD6}
 .co-prod{background:#FBE7E6;color:#A12A20;border-color:#F0BDB8}
 .co-role{background:#E6EEF9;color:#24508F;border-color:#C3D4EE}
@@ -120,7 +122,7 @@ def client_names() -> dict[str, str]:
 class View:
     """Everything the tabs need from the last run of the selected client."""
 
-    def __init__(self, outcome: graph.Outcome | None):
+    def __init__(self, outcome: graph.Outcome | None, undone: dict[str, ExecResult] | None = None):
         self.outcome = outcome
         s: graph.State = outcome['state'] if outcome else {}
         self.state = s
@@ -130,7 +132,8 @@ class View:
         self.findings: dict[str, Finding] = {f.resource_id: f for f in s.get('findings', [])}
         self.actions: dict[str, Action] = {a.id: a for a in s.get('actions', [])}
         self.decisions: dict[str, Decision] = {d.action_id: d for d in s.get('decisions', [])}
-        self.results: dict[str, ExecResult] = {r.action_id: r for r in s.get('results', [])}
+        # Undo happens outside the graph: its UNDONE results replace the DONE ones.
+        self.results: dict[str, ExecResult] = {r.action_id: r for r in s.get('results', [])} | (undone or {})
         self.approvals: dict[str, str] = s.get('approvals', {})
         # resource id -> action types its tags asked for (all blocked)
         self.injected: dict[str, list[str]] = {}
@@ -140,7 +143,7 @@ class View:
                 self.injected.setdefault(a.resource_id, []).append(a.type)
         complete = bool(s.get('decisions')) and len(self.decisions) == len(self.actions)
         self.totals = calc.totals(s['resources'], s['findings'], s['actions'], s['decisions'],
-                                  s.get('results', []), self.approvals) if complete else None
+                                  list(self.results.values()), self.approvals) if complete else None
 
     def state_of(self, a: Action) -> str:
         if a.id in self.results and self.results[a.id].status == 'DONE':
@@ -225,9 +228,14 @@ def card_label(view: View, a: Action) -> str:
 
 
 def action_card(view: View, a: Action, expanded: bool = False) -> None:
-    with st.expander(card_label(view, a), expanded=expanded):
+    where = f'card-{a.id}'
+    ask = st.session_state.get('undo_ask')
+    with st.expander(card_label(view, a), expanded=expanded or bool(ask and ask[1] == where)):
         render_action_card(a, view.decisions[a.id], view.resources[a.resource_id], view.findings.get(a.resource_id),
                            view.results.get(a.id), view.injected.get(a.resource_id))
+        if a.id in view.results and view.results[a.id].status == 'DONE':
+            undo_button(view, a, where)
+            undo_confirm(view, where)
 
 
 def event_summary(e: AuditEvent) -> str:
@@ -263,6 +271,16 @@ def event_summary(e: AuditEvent) -> str:
             return f"Report: {inr(t.get('inr_month', 0))}/month realised, {t.get('kgco2e_year', 0):,.1f} kg CO₂e/year"
         case 'error':
             return f"{p.get('node')}: {p.get('error')}"
+        case 'undo':
+            return f"{target}: undone, restored from {p.get('snapshot_id')}"
+        case 'redteam_plant':
+            return f"Red team planted on {p.get('resource_id')}: “{p.get('text')}”"
+        case 'redteam_attack':
+            return f"Red team attack on {p.get('resource_id')}: prod resources changed {p.get('prod_changed')}"
+        case 'redteam_clear':
+            return f"Red team tags removed from {', '.join(p.get('resource_ids') or []) or 'nothing'}"
+        case 'policy_saved':
+            return f"Custom policy saved to {p.get('path')}"
     return json.dumps(p)[:160]
 
 
@@ -305,6 +323,66 @@ def do_reset(client: str, name: str) -> None:
 def approve_all(keys: list[str]) -> None:
     for key in keys:
         st.session_state[key] = 'Approve'
+
+
+def undone_for(thread_id: str) -> dict[str, ExecResult]:
+    return st.session_state.setdefault('undone', {}).setdefault(thread_id, {})
+
+
+def ask_undo(action_id: str, where: str) -> None:
+    st.session_state.undo_ask = (action_id, where)
+
+
+def cancel_undo() -> None:
+    st.session_state.pop('undo_ask', None)
+
+
+def do_undo(client: str, action_id: str, user: str, role: Role) -> None:
+    cancel_undo()
+    outcome = outcomes().get(client)
+    if outcome is None:
+        return
+    view = View(outcome, undone_for(outcome['thread_id']))
+    try:
+        start_aws()
+        result = executor.undo(view.actions[action_id], view.results[action_id], AwsProvider(client),
+                               outcome['state']['audit_path'], user, role)
+        undone_for(outcome['thread_id'])[action_id] = result
+        st.session_state.flash = ('success', f'{view.actions[action_id].resource_id}: undone. {result.detail}')
+    except Exception as e:
+        log.error('undo failed', exc_info=True)
+        st.session_state.flash = ('error', f'Could not undo: {e}')
+
+
+def undo_question(view: View, a: Action) -> str:
+    r = view.resources[a.resource_id]
+    verb = {'RESIZE': 'resize', 'STOP': 'stop', 'SCHEDULE': 'schedule', 'SNAPSHOT': 'snapshot'}.get(a.type, a.type.lower())
+    what = {'RESIZE': f'This restores {r.instance_type}.', 'STOP': 'This starts it again.',
+            'SCHEDULE': 'This removes the office-hours schedule (back to always on).',
+            'SNAPSHOT': 'The snapshot is kept; nothing else changes.'}.get(a.type, 'This restores the saved state.')
+    return f'Undo {verb} of {a.resource_id}? {what}'
+
+
+def undo_button(view: View, a: Action, where: str, label: str = '↶ Undo') -> None:
+    can = role in APPROVERS
+    st.button(label, key=f'undo-{where}-{view.outcome["thread_id"]}-{a.id}', on_click=ask_undo, args=(a.id, where),
+              disabled=not can, help=None if can else 'Only an Approver or Admin can undo.')
+
+
+def undo_confirm(view: View, where: str) -> None:
+    """The confirmation step, shown where the Undo was clicked."""
+    ask = st.session_state.get('undo_ask')
+    if not ask or ask[1] != where or ask[0] not in view.actions:
+        return
+    a = view.actions[ask[0]]
+    if view.results.get(a.id) is None or view.results[a.id].status != 'DONE':
+        return
+    with st.container(border=True):
+        st.markdown(f'**{undo_question(view, a)}**')
+        c1, c2, _ = st.columns([1, 1, 4])
+        c1.button('Confirm undo', key=f'undo-yes-{where}', type='primary', on_click=do_undo,
+                  args=(client, a.id, user, role), width='stretch')
+        c2.button('Cancel', key=f'undo-no-{where}', on_click=cancel_undo, width='stretch')
 
 
 def attacks() -> dict[str, dict]:
@@ -535,7 +613,8 @@ flash = st.session_state.pop('flash', None)
 if flash:
     st.toast(flash[1], icon='⚠️' if flash[0] == 'error' else '✅')
 
-view = View(outcomes().get(client))
+_outcome = outcomes().get(client)
+view = View(_outcome, undone_for(_outcome['thread_id']) if _outcome else None)
 s = view.state
 
 # --- Run -------------------------------------------------------------------------
@@ -568,6 +647,14 @@ with tabs[0]:
 
         st.html('<div class="co-section">Agent trace · the AI suggests, the rules decide</div>')
         render_trace(view)
+        done = [a for a in view.actions.values() if a.id in view.results and view.results[a.id].status == 'DONE']
+        if done:
+            st.caption('Undo an executed change (restores its snapshot):')
+            ucols = st.columns(min(len(done), 6))
+            for i, a in enumerate(done):
+                with ucols[i % len(ucols)]:
+                    undo_button(view, a, 'trace', f'↶ {a.resource_id}')
+            undo_confirm(view, 'trace')
 
         for tier, title in (('AUTO', 'Auto-executed'), ('APPROVE', 'Needs approval'), ('BLOCK', 'Blocked')):
             group = [a for a in view.actions.values() if view.decisions[a.id].tier == tier]
