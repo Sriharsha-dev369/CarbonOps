@@ -26,7 +26,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import Command, interrupt
 
-from carbonops import analyst, audit, calc, config, detector, executor, guard, reporter, seed
+from carbonops import analyst, audit, calc, config, detector, executor, guard, redteam, reporter, seed
 from carbonops.fmt import inr
 from carbonops.models import (
     Action, AuditEvent, Decision, ExecResult, Finding, Metrics, Resource, Role,
@@ -315,6 +315,7 @@ def resume(thread_id: str, approvals: dict[str, Verdict], approver: str, role: R
 
 
 def reset_demo(client: str) -> None:
-    """Rebuild the client's emulated estate and clear its audit log."""
+    """Rebuild the client's emulated estate (planted red-team tags included) and clear its audit log."""
     seed.reset(client)
+    redteam.forget(client)
     config.audit_path(client).unlink(missing_ok=True)

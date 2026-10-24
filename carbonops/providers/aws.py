@@ -90,6 +90,16 @@ class AwsProvider:
             raise KeyError(f'{resource_id} not found in AWS for {self.client}')
         return self._ids[resource_id]
 
+    def set_tag(self, resource_id: str, key: str, value: str | None) -> None:
+        """Set one owner tag on a VM or volume, or remove it when `value` is None (red-team demo)."""
+        if key in SYSTEM_TAGS:
+            raise ValueError(f'{key} is managed by CarbonOps')
+        _, aws_id = self._lookup(resource_id)
+        if value is None:
+            self.ec2.delete_tags(Resources=[aws_id], Tags=[{'Key': key}])
+        else:
+            self.ec2.create_tags(Resources=[aws_id], Tags=[{'Key': key, 'Value': value}])
+
     def _instance(self, instance_id: str) -> dict:
         return self.ec2.describe_instances(InstanceIds=[instance_id])['Reservations'][0]['Instances'][0]
 
