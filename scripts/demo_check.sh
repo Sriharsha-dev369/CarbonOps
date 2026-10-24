@@ -37,7 +37,9 @@ done
 out=$(uv run pytest -q 2>&1)
 if [[ $? -eq 0 ]]; then step "pytest: $(tail -1 <<<"$out")"; ok; else step "pytest"; bad "$out"; fi
 
-if git log -p | grep -qi "gsk_"; then step "no Groq keys in git history"; bad "found gsk_ in history"; else step "no Groq keys in git history"; ok; fi
+# Count (not grep -q): an early grep exit would SIGPIPE git log and, with pipefail, hide a match.
+keys=$(git log -p --all | grep -Ec 'gsk_[A-Za-z0-9]{20,}|sk-[A-Za-z0-9]{20,}|AKIA[0-9A-Z]{16}')
+if [[ $keys -gt 0 ]]; then step "no API keys in git history"; bad "found $keys key-like strings in history"; else step "no API keys in git history"; ok; fi
 
 echo
 if [[ $fail -eq 0 ]]; then echo "PASS"; else echo "FAIL"; fi
